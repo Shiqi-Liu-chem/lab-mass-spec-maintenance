@@ -154,9 +154,37 @@ pyinstaller "MS_recording&maintenance.spec"
 
 ---
 
+## 🙏 致谢
+
+- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) — 开源 OCR 引擎
+- [Anthropic](https://www.anthropic.com/) — Claude Code AI 编程助手
+- 课题组全体成员对需求调研与功能测试的支持
+
+---
+
+## 🔗 课题组主页
+
+🏫 [中国科学院青岛生物能源与过程研究所 — 团簇化学与能源催化课题组](http://cluster.qibebt.ac.cn/)
+
+欢迎访问课题组主页了解更多研究方向与最新成果。
+
+---
+
+## 👥 贡献者
+
+感谢以下对本项目的贡献者：
+
+- **Shiqi Liu** — 项目发起者、需求定义、测试与验证
+- 联系方式：riixz17ya@gmail.com
+- *（其他协作者待补充）*
+
+> 本项目的主要代码由 [Claude Code](https://claude.ai/code)（Anthropic 出品的 AI 编程智能体）辅助编写完成。
+
+---
+
 ## 💡 开发方式
 
-Claude Code 辅助参与了代码生成、重构、文档编写与调试工作。领域需求、仪器专属工作流设计、验证标准、隐私决策及最终审阅均由作者完成。
+本项目使用 Claude Code 辅助完成代码生成、重构、文档编写与调试。领域需求定义、仪器专用工作流设计、验证标准制定、隐私相关决策及最终审核均由作者独立完成。
 
 ---
 
