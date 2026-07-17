@@ -35,13 +35,13 @@
 ## 📸 屏幕截图
 
 <p align="center">
-  <img src="docs/screenshots/01-home.png" alt="Main interface for selecting a mass spectrometer" width="45%">
+  <img src="docs/01-home.png" alt="Main interface for selecting a mass spectrometer" width="45%">
   &nbsp;&nbsp;
-  <img src="docs/screenshots/02-experiment-log.png" alt="Experiment record management interface" width="45%">
+  <img src="docs/02-experiment-log.png" alt="Experiment record management interface" width="45%">
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/03-maintenance-log.png" alt="Maintenance record management interface" width="60%">
+  <img src="docs/03-maintenance-log.png" alt="Maintenance record management interface" width="60%">
 </p>
 
 ---
