@@ -140,23 +140,23 @@ pyinstaller "MS_recording&maintenance.spec"
 
 ---
 
-## Data and privacy
+## 🔒 数据与隐私
 
-This public repository contains no real experiment records, personnel data, instrument credentials, or unpublished research data. Screenshots and sample files use sanitized or fictional content. Users should follow their institution's data-management and instrument-safety policies.
-
----
-
-## Limitations
-
-- This project is a research-group workflow prototype and is not official instrument-vendor software.
-- Maintenance cycles are configurable references and do not replace manufacturer manuals or institutional SOPs.
-- Users should back up the local database before upgrades.
+本公开仓库不包含任何真实实验记录、人员数据、仪器凭证或未发表的研究数据。截图与示例文件均使用脱敏或虚构内容。使用者应遵守所在机构的数据管理与仪器安全规范。
 
 ---
 
-## Development approach
+## ⚠️ 使用限制
 
-Claude Code was used to assist code generation, refactoring, documentation, and debugging. Domain requirements, instrument-specific workflow design, validation criteria, privacy decisions, and final review were completed by the author.
+- 本项目为课题组工作流原型，并非仪器厂商官方软件。
+- 维护周期为可配置参考值，不能替代制造商手册或机构标准操作规程（SOP）。
+- 升级前请备份本地数据库。
+
+---
+
+## 💡 开发方式
+
+Claude Code 辅助参与了代码生成、重构、文档编写与调试工作。领域需求、仪器专属工作流设计、验证标准、隐私决策及最终审阅均由作者完成。
 
 ---
 
