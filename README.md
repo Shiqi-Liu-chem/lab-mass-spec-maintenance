@@ -35,13 +35,13 @@
 ## 📸 屏幕截图
 
 <p align="center">
-  <img src="docs/01-home.png" alt="Main interface for selecting a mass spectrometer" width="45%">
+  <img src="docs/screenshots/01-home.png" alt="Main interface for selecting a mass spectrometer" width="45%">
   &nbsp;&nbsp;
-  <img src="docs/02-experiment-log.png" alt="Experiment record management interface" width="45%">
+  <img src="docs/screenshots/02-experiment-log.png" alt="Experiment record management interface" width="45%">
 </p>
 
 <p align="center">
-  <img src="docs/03-maintenance-log.png" alt="Maintenance record management interface" width="60%">
+  <img src="docs/screenshots/03-maintenance-log.png" alt="Maintenance record management interface" width="60%">
 </p>
 
 ---
@@ -154,6 +154,25 @@ pyinstaller "MS_recording&maintenance.spec"
 
 ---
 
+## 🚧 开发状态
+
+> [!IMPORTANT]
+> 本项目仍在积极开发中。核心的实验记录、维护追踪、搜索与数据导出功能已完成实现，量化验证与更广泛的兼容性测试仍在进行中。
+
+### 当前进度
+
+- [x] 核心实验与维护记录工作流已实现
+- [x] CSV 与 Excel 导出已实现
+- [x] Windows 可执行文件已打包
+- [ ] 代表性记录的数据完整性验证
+- [ ] 导出一致性测试
+- [ ] 更多质谱仪型号兼容性测试
+- [ ] 自动化回归测试
+
+当前版本应视为早期功能原型，而非经过全面验证的生产系统。计划中的验证工作详见 [Issue #1](https://github.com/Shiqi-Liu-chem/lab-mass-spec-maintenance/issues/1)。
+
+---
+
 ## 🙏 致谢
 
 - [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) — 开源 OCR 引擎
@@ -182,9 +201,9 @@ pyinstaller "MS_recording&maintenance.spec"
 
 ---
 
-## 💡 开发方式
+## 🤖 AI 辅助开发
 
-本项目使用 Claude Code 辅助完成代码生成、重构、文档编写与调试。领域需求定义、仪器专用工作流设计、验证标准制定、隐私相关决策及最终审核均由作者独立完成。
+本项目由 Shiqi Liu 设计并主导开发，Claude Code 提供编码辅助。AI 工具参与了代码实现、调试与文档编写。项目需求、科学背景、设计决策、测试及最终审核均由作者负责。
 
 ---
 
