@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+*.whl
+
+# 虚拟环境
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code
+.claude/
+
+# 数据库文件
+*.db
+*.db-shm
+*.db-wal
+
+# 配置文件
+config.json
+ms_config.json
+
+# 系统文件
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# PyInstaller
+*.spec.bak
+warn-*.txt
+xref-*.html
+
+# 旧版文件
+shs_VER/
+ESI_information.jpg
+ESI_preview.jpg
+MS.pptx
+存在*.txt
+
+# 视频文件
+*.mp4
+
+# new/ 目录（已迁移至根目录）
+new/
+
+# 示例数据中的数据库
+sample_data/*.db
+sample_data/*.db-shm
+sample_data/*.db-wal
