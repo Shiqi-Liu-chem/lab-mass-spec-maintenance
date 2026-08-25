@@ -18,6 +18,7 @@ env/
 .idea/
 *.swp
 *.swo
+.codex-worktrees/
 
 # Claude Code
 .claude/
@@ -50,9 +51,14 @@ MS.pptx
 
 # 视频文件
 *.mp4
+introduction/demonstration video.zip
 
 # new/ 目录（已迁移至根目录）
 new/
+
+# 本地旧系统兼容构建归档
+Old_ver/
+un_useful/
 
 # 示例数据中的数据库
 sample_data/*.db

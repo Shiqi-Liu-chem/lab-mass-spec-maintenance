@@ -3,8 +3,12 @@ MS_recording&maintenance — 质谱仪使用记录与维护管理
 支持 Q-IM-TOF / LTQ / Q-Exactive 三种质谱仪
 """
 
+import ctypes
+import hashlib
 import os
 import re
+import shutil
+import stat
 import sys
 import csv
 import json
@@ -21,8 +25,48 @@ if getattr(sys, "frozen", False):
     APP_DIR = os.path.dirname(sys.executable)
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(APP_DIR, "ms_data.db")
-CONFIG_PATH = os.path.join(APP_DIR, "ms_config.json")
+
+
+def _get_data_dir():
+    """Return a per-user writable directory, including on Windows XP."""
+    if os.name == "nt":
+        base = os.environ.get("APPDATA")
+        if not base:
+            profile = os.environ.get("USERPROFILE") or APP_DIR
+            base = os.path.join(profile, "Application Data")
+    else:
+        base = os.path.expanduser("~/.local/share")
+    data_dir = os.path.join(base, "MSRecordingMaintenance")
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+    except OSError:
+        if not os.path.isdir(data_dir):
+            raise
+    return data_dir
+
+
+DATA_DIR = _get_data_dir()
+DB_PATH = os.path.join(DATA_DIR, "ms_data.db")
+CONFIG_PATH = os.path.join(DATA_DIR, "ms_config.json")
+
+
+def _migrate_legacy_data_files():
+    """Copy data from older portable releases without overwriting user data."""
+    for filename, destination in (("ms_data.db", DB_PATH), ("ms_config.json", CONFIG_PATH)):
+        source = os.path.join(APP_DIR, filename)
+        if os.path.abspath(source) == os.path.abspath(destination):
+            continue
+        if os.path.isfile(source) and not os.path.exists(destination):
+            try:
+                # copyfile intentionally avoids carrying the legacy read-only flag.
+                shutil.copyfile(source, destination)
+                os.chmod(destination, stat.S_IREAD | stat.S_IWRITE)
+            except OSError:
+                # A new database/config will be created if the legacy file cannot be read.
+                pass
+
+
+_migrate_legacy_data_files()
 
 # ============================================================
 # 静态数据
@@ -56,18 +100,70 @@ MS_TYPES = ["Q-IM-TOF", "LTQ", "Q-Exactive"]
 
 MS_CONFIG = {
     "Q-IM-TOF": {
-        "ion_label": "测试条件",
-        "ion_default": "2.50-40-80-100-20-50-600-4.6",
+        "test_fields": [
+            ("毛细管电压", "2.50"),
+            ("采样锥电压", "40"),
+            ("离子源偏置电压", "80"),
+            ("离子源温度", "80"),
+            ("去溶剂化温度", "280"),
+            ("锥孔气流量", "50"),
+            ("去溶剂气流量", "600"),
+            ("雾化气压力", "4.6"),
+        ],
     },
     "LTQ": {
-        "ion_label": "测试条件",
-        "ion_default": "5kV-275℃ 10-50V",
+        "test_fields": [
+            ("鞘气", "0"),
+            ("辅助气", "0"),
+            ("喷雾电压", "5.00"),
+            ("毛细管温度", "275.00"),
+            ("毛细管电压", "10.00"),
+            ("管透镜电压", "50.00"),
+        ],
     },
     "Q-Exactive": {
-        "ion_label": "测试条件",
-        "ion_default": "",
+        "test_fields": [
+            ("鞘气", "5"),
+            ("辅助气", "0"),
+            ("吹扫气", "0"),
+            ("喷雾电压", "3.20"),
+            ("毛细管温度", "320"),
+            ("S-lens射频电平", "50.0"),
+            ("辅助器加热器温度", "30"),
+        ],
     },
 }
+
+# 三种质谱共用的真空信息字段
+VACUUM_FIELDS = ("真空度", "真空状态")
+
+# 真空状态取值（可编辑下拉框）
+VACUUM_STATUS_OPTIONS = ("正常", "需关注", "异常")
+
+# 测试条件字段中文名 → 数据库列名（同一物理参数在不同质谱间共用列）
+TEST_FIELD_COLUMN_MAP = {
+    "毛细管电压": "capillary_voltage",
+    "采样锥电压": "sampling_cone_voltage",
+    "离子源偏置电压": "ion_source_bias",
+    "离子源温度": "ion_source_temp",
+    "去溶剂化温度": "desolvation_temp",
+    "锥孔气流量": "cone_gas_flow",
+    "去溶剂气流量": "desolvation_gas_flow",
+    "雾化气压力": "nebulizer_pressure",
+    "鞘气": "sheath_gas",
+    "辅助气": "aux_gas",
+    "喷雾电压": "spray_voltage",
+    "毛细管温度": "capillary_temp",
+    "管透镜电压": "tube_lens_voltage",
+    "吹扫气": "sweep_gas",
+    "S-lens射频电平": "slens_rf_level",
+    "辅助器加热器温度": "aux_heater_temp",
+}
+
+
+def _test_field_column(fname: str) -> str:
+    """测试条件字段中文名对应的数据库列名"""
+    return TEST_FIELD_COLUMN_MAP.get(fname, "ion_source")
 
 # 每种质谱的维护类型及推荐周期(天)
 # 根据维护计划表格 maintenance.xlsx 设定
@@ -201,8 +297,401 @@ def load_config():
         return {}
 
 def save_config(cfg):
-    with open(CONFIG_PATH, "w") as f:
+    _set_readonly(CONFIG_PATH, False)
+    _clear_hidden(CONFIG_PATH)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
+
+
+# ============================================================
+# 数据文件防误删保护（Windows）
+# ============================================================
+_WIN_IS_HIDDEN = 0x02
+_WIN_IS_READONLY = 0x01
+
+
+def _files_to_protect():
+    """返回需要保护的数据文件列表（含 SQLite WAL/SHM 临时文件）"""
+    paths = [DB_PATH, CONFIG_PATH]
+    for suffix in ("-wal", "-shm"):
+        paths.append(DB_PATH + suffix)
+    return paths
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _set_hidden(path: str) -> bool:
+    """将文件设为隐藏属性，成功返回 True，非 Windows 或失败返回 False"""
+    if not _is_windows():
+        return False
+    try:
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(path)
+        ctypes.windll.kernel32.SetFileAttributesW(path, attrs | _WIN_IS_HIDDEN)
+        return True
+    except Exception:
+        return False
+
+
+def _clear_hidden(path: str) -> bool:
+    """清除文件的隐藏属性"""
+    if not _is_windows():
+        return False
+    try:
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(path)
+        ctypes.windll.kernel32.SetFileAttributesW(path, attrs & ~_WIN_IS_HIDDEN)
+        return True
+    except Exception:
+        return False
+
+
+def _set_readonly(path: str, readonly: bool) -> bool:
+    """设置/清除文件的只读属性"""
+    if not _is_windows():
+        return False
+    try:
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(path)
+        if readonly:
+            new_attrs = attrs | _WIN_IS_READONLY
+        else:
+            new_attrs = attrs & ~_WIN_IS_READONLY
+        ctypes.windll.kernel32.SetFileAttributesW(path, new_attrs)
+        return True
+    except Exception:
+        return False
+
+
+def protect_data_files():
+    """Compatibility no-op: SQLite files must stay writable, including WAL/SHM."""
+    return
+
+
+def unprotect_data_files():
+    """清除数据文件的 只读 + 隐藏 属性（写操作前调用）"""
+    for path in _files_to_protect():
+        if os.path.exists(path):
+            _set_readonly(path, False)
+
+
+def clear_data_files():
+    """清空所有实验记录、维护记录并重置配置（保留管理员密码）。
+    返回 (success: bool, message: str)。
+    """
+    unprotect_data_files()
+    try:
+        # 清空数据库两张表
+        with get_db() as conn:
+            conn.execute("DELETE FROM experiments")
+            conn.execute("DELETE FROM maintenance")
+        # 重置配置，仅保留管理员密码哈希
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            cfg = {}
+        admin_hash = cfg.get("admin_password_hash", "")
+        save_config({"admin_password_hash": admin_hash})
+        return True, "已清空所有实验记录、维护记录及配置数据。"
+    except Exception as e:
+        return False, f"清除失败：{e}"
+    finally:
+        protect_data_files()
+
+# 数据已存放到用户应用数据目录，无需再通过只读属性防误删。
+
+# ============================================================
+# 管理员密码管理
+# ============================================================
+def _hash_password(password: str) -> str:
+    """对密码做 SHA-256 哈希"""
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def get_admin_password_hash() -> str:
+    """从配置文件读取已存储的密码哈希，未设置时返回空字符串"""
+    cfg = load_config()
+    return cfg.get("admin_password_hash", "")
+
+
+def set_admin_password_hash(h: str):
+    """将密码哈希写入配置文件"""
+    cfg = load_config()
+    cfg["admin_password_hash"] = h
+    save_config(cfg)
+
+
+def is_admin_password_set() -> bool:
+    """检查是否已设置管理员密码"""
+    return bool(get_admin_password_hash())
+
+
+def verify_admin_password(password: str) -> bool:
+    """验证管理员密码是否正确"""
+    stored = get_admin_password_hash()
+    if not stored:
+        return False
+    return _hash_password(password) == stored
+
+
+def require_admin_auth(parent) -> bool:
+    """需要管理员权限的操作前调用此函数。
+    弹出密码输入对话框，验证成功返回 True，失败/取消返回 False。
+    """
+    # 还没有设置密码，则引导用户先设置
+    if not is_admin_password_set():
+        return _show_setup_password_dialog(parent)
+
+    return _show_verify_password_dialog(parent)
+
+
+def _show_setup_password_dialog(parent) -> bool:
+    """首次设置管理员密码的对话框"""
+    dialog = tk.Toplevel(parent)
+    dialog.title("设置管理员密码")
+    dialog.configure(bg=BG_DARK)
+    dialog.resizable(False, False)
+    dialog.transient(parent)
+    dialog.grab_set()
+
+    w, h = 450, 290
+    sw = dialog.winfo_screenwidth()
+    sh = dialog.winfo_screenheight()
+    dialog.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+    result = tk.BooleanVar(value=False)
+
+    # 装饰线
+    canvas = tk.Canvas(dialog, height=3, bg=BG_DARK, highlightthickness=0)
+    canvas.pack(fill=tk.X)
+    canvas.create_rectangle(0, 0, w, 3, fill=YELLOW_STATUS, outline="")
+
+    main = tk.Frame(dialog, bg=BG_DARK)
+    main.pack(fill=tk.BOTH, expand=True, padx=24, pady=16)
+
+    tk.Label(main, text="⚠ 首次使用 — 请设置管理员密码",
+             font=("Segoe UI", 12, "bold"), fg=YELLOW_STATUS, bg=BG_DARK).pack(pady=(0, 4))
+    tk.Label(main, text="设置密码后，编辑和删除操作均需验证管理员身份。",
+             font=("Segoe UI", 9), fg=FG_SECONDARY, bg=BG_DARK).pack(pady=(0, 16))
+
+    # 新密码
+    pw_frame = tk.Frame(main, bg=BG_DARK)
+    pw_frame.pack(fill=tk.X, pady=(0, 8))
+    tk.Label(pw_frame, text="新密码", fg=FG_PRIMARY, bg=BG_DARK, font=("Segoe UI", 9)).pack(side=tk.LEFT)
+    var_pw = tk.StringVar()
+    ent_pw = ttk.Entry(pw_frame, textvariable=var_pw, show="●", width=24)
+    ent_pw.pack(side=tk.LEFT, padx=(4, 0))
+    # 确认密码
+    cf_frame = tk.Frame(main, bg=BG_DARK)
+    cf_frame.pack(fill=tk.X, pady=(0, 12))
+    tk.Label(cf_frame, text="确认密码", fg=FG_PRIMARY, bg=BG_DARK, font=("Segoe UI", 9)).pack(side=tk.LEFT)
+    var_cf = tk.StringVar()
+    ent_cf = ttk.Entry(cf_frame, textvariable=var_cf, show="●", width=24)
+    ent_cf.pack(side=tk.LEFT, padx=(4, 0))
+
+    # 错误提示
+    lbl_error = tk.Label(main, text="", fg=RED_STATUS, bg=BG_DARK, font=("Segoe UI", 9))
+
+    def do_set():
+        pw = var_pw.get()
+        cf = var_cf.get()
+        if not pw:
+            lbl_error.config(text="密码不能为空")
+            return
+        if len(pw) < 4:
+            lbl_error.config(text="密码长度至少为 4 位")
+            return
+        if pw != cf:
+            lbl_error.config(text="两次输入的密码不一致")
+            return
+        set_admin_password_hash(_hash_password(pw))
+        result.set(True)
+        dialog.destroy()
+
+    lbl_error.pack()
+
+    btn_frame = tk.Frame(main, bg=BG_DARK)
+    btn_frame.pack(fill=tk.X, pady=(12, 0))
+    ttk.Button(btn_frame, text="确认设置", command=do_set, style="Primary.TButton").pack(side=tk.RIGHT, padx=(4, 0))
+    ttk.Button(btn_frame, text="取消", command=dialog.destroy).pack(side=tk.RIGHT, padx=4)
+
+    ent_pw.focus_set()
+    ent_pw.bind("<Return>", lambda e: ent_cf.focus_set())
+    ent_cf.bind("<Return>", lambda e: do_set())
+    dialog.bind("<Escape>", lambda e: dialog.destroy())
+
+    dialog.wait_window()
+    return result.get()
+
+
+def _show_verify_password_dialog(parent) -> bool:
+    """验证管理员密码的对话框"""
+    dialog = tk.Toplevel(parent)
+    dialog.title("管理员验证")
+    dialog.configure(bg=BG_DARK)
+    dialog.resizable(False, False)
+    dialog.transient(parent)
+    dialog.grab_set()
+
+    w, h = 420, 260
+    sw = dialog.winfo_screenwidth()
+    sh = dialog.winfo_screenheight()
+    dialog.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+    result = tk.BooleanVar(value=False)
+
+    # 装饰线
+    canvas = tk.Canvas(dialog, height=3, bg=BG_DARK, highlightthickness=0)
+    canvas.pack(fill=tk.X)
+    canvas.create_rectangle(0, 0, w, 3, fill=ACCENT, outline="")
+
+    main = tk.Frame(dialog, bg=BG_DARK)
+    main.pack(fill=tk.BOTH, expand=True, padx=24, pady=16)
+
+    tk.Label(main, text="\U0001f512 管理员验证",
+             font=("Segoe UI", 12, "bold"), fg=ACCENT_HIGHLIGHT, bg=BG_DARK).pack(pady=(0, 4))
+    tk.Label(main, text="编辑和删除操作需要管理员权限，请输入密码。",
+             font=("Segoe UI", 9), fg=FG_SECONDARY, bg=BG_DARK).pack(pady=(0, 14))
+
+    # 密码输入
+    pw_frame = tk.Frame(main, bg=BG_DARK)
+    pw_frame.pack(fill=tk.X, pady=(0, 10))
+    tk.Label(pw_frame, text="密码", fg=FG_PRIMARY, bg=BG_DARK, font=("Segoe UI", 9)).pack(side=tk.LEFT)
+    var_pw = tk.StringVar()
+    ent_pw = ttk.Entry(pw_frame, textvariable=var_pw, show="●", width=26)
+    ent_pw.pack(side=tk.LEFT, padx=(4, 0))
+    ent_pw.focus_set()
+
+    # 错误提示
+    lbl_error = tk.Label(main, text="", fg=RED_STATUS, bg=BG_DARK, font=("Segoe UI", 9))
+    lbl_error.pack()
+
+    def do_verify():
+        pw = var_pw.get()
+        if verify_admin_password(pw):
+            result.set(True)
+            dialog.destroy()
+        else:
+            lbl_error.config(text="密码错误，请重试")
+            var_pw.set("")
+            ent_pw.focus_set()
+
+    btn_frame = tk.Frame(main, bg=BG_DARK)
+    btn_frame.pack(fill=tk.X, pady=(12, 0))
+    ttk.Button(btn_frame, text="确认", command=do_verify, style="Primary.TButton").pack(side=tk.RIGHT, padx=(4, 0))
+    ttk.Button(btn_frame, text="取消", command=dialog.destroy).pack(side=tk.RIGHT, padx=4)
+
+    ent_pw.bind("<Return>", lambda e: do_verify())
+    dialog.bind("<Escape>", lambda e: dialog.destroy())
+
+    dialog.wait_window()
+    return result.get()
+
+
+def show_clear_cache_dialog(parent) -> bool:
+    """「清除缓存数据」对话框：验证管理员密码后确认清空数据。
+    返回是否已执行清除。
+    """
+    if not require_admin_auth(parent):
+        return False
+
+    # 二次确认
+    if not messagebox.askyesno(
+        "确认清除缓存数据",
+        "将清空所有实验记录、维护记录及配置数据（管理员密码保留）。\n"
+        "此操作不可撤销，确定继续吗？",
+        parent=parent,
+    ):
+        return False
+
+    ok, msg = clear_data_files()
+    if ok:
+        messagebox.showinfo("完成", msg, parent=parent)
+    else:
+        messagebox.showerror("清除失败", msg, parent=parent)
+    return ok
+
+
+def show_change_password_dialog(parent):
+    """修改管理员密码对话框"""
+    if not is_admin_password_set():
+        messagebox.showinfo("提示", "尚未设置管理员密码。", parent=parent)
+        return
+
+    if not require_admin_auth(parent):
+        messagebox.showwarning("提示", "需要先通过管理员验证才能修改密码。", parent=parent)
+        return
+
+    dialog = tk.Toplevel(parent)
+    dialog.title("修改管理员密码")
+    dialog.configure(bg=BG_DARK)
+    dialog.resizable(False, False)
+    dialog.transient(parent)
+    dialog.grab_set()
+
+    w, h = 450, 290
+    sw = dialog.winfo_screenwidth()
+    sh = dialog.winfo_screenheight()
+    dialog.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+    canvas = tk.Canvas(dialog, height=3, bg=BG_DARK, highlightthickness=0)
+    canvas.pack(fill=tk.X)
+    canvas.create_rectangle(0, 0, w, 3, fill=ACCENT, outline="")
+
+    main = tk.Frame(dialog, bg=BG_DARK)
+    main.pack(fill=tk.BOTH, expand=True, padx=24, pady=16)
+
+    tk.Label(main, text="🔒 修改管理员密码",
+             font=("Segoe UI", 12, "bold"), fg=ACCENT_HIGHLIGHT, bg=BG_DARK).pack(pady=(0, 4))
+    tk.Label(main, text="请输入新密码。",
+             font=("Segoe UI", 9), fg=FG_SECONDARY, bg=BG_DARK).pack(pady=(0, 14))
+
+    pw_frame = tk.Frame(main, bg=BG_DARK)
+    pw_frame.pack(fill=tk.X, pady=(0, 8))
+    tk.Label(pw_frame, text="新密码", fg=FG_PRIMARY, bg=BG_DARK, font=("Segoe UI", 9)).pack(side=tk.LEFT)
+    var_pw = tk.StringVar()
+    ent_pw = ttk.Entry(pw_frame, textvariable=var_pw, show="●", width=24)
+    ent_pw.pack(side=tk.LEFT, padx=(4, 0))
+
+    cf_frame = tk.Frame(main, bg=BG_DARK)
+    cf_frame.pack(fill=tk.X, pady=(0, 12))
+    tk.Label(cf_frame, text="确认密码", fg=FG_PRIMARY, bg=BG_DARK, font=("Segoe UI", 9)).pack(side=tk.LEFT)
+    var_cf = tk.StringVar()
+    ent_cf = ttk.Entry(cf_frame, textvariable=var_cf, show="●", width=24)
+    ent_cf.pack(side=tk.LEFT, padx=(4, 0))
+
+    lbl_error = tk.Label(main, text="", fg=RED_STATUS, bg=BG_DARK, font=("Segoe UI", 9))
+
+    def do_change():
+        pw = var_pw.get()
+        cf = var_cf.get()
+        if not pw:
+            lbl_error.config(text="密码不能为空")
+            return
+        if len(pw) < 4:
+            lbl_error.config(text="密码长度至少为 4 位")
+            return
+        if pw != cf:
+            lbl_error.config(text="两次输入的密码不一致")
+            return
+        set_admin_password_hash(_hash_password(pw))
+        messagebox.showinfo("成功", "管理员密码已修改成功！", parent=dialog)
+        dialog.destroy()
+
+    lbl_error.pack()
+
+    btn_frame = tk.Frame(main, bg=BG_DARK)
+    btn_frame.pack(fill=tk.X, pady=(12, 0))
+    ttk.Button(btn_frame, text="确认修改", command=do_change, style="Primary.TButton").pack(side=tk.RIGHT, padx=(4, 0))
+    ttk.Button(btn_frame, text="取消", command=dialog.destroy).pack(side=tk.RIGHT, padx=4)
+
+    ent_pw.focus_set()
+    ent_pw.bind("<Return>", lambda e: ent_cf.focus_set())
+    ent_cf.bind("<Return>", lambda e: do_change())
+    dialog.bind("<Escape>", lambda e: dialog.destroy())
+
+    dialog.wait_window()
+
 
 # ============================================================
 # 数据库
@@ -214,6 +703,8 @@ def get_db():
     return conn
 
 def init_db():
+    # 启动前先解除数据文件保护，确保建表/迁移可写
+    unprotect_data_files()
     with get_db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS experiments (
@@ -238,11 +729,24 @@ def init_db():
             ("solvent", "TEXT NOT NULL DEFAULT ''"),
             ("cleaned", "TEXT NOT NULL DEFAULT ''"),
             ("ms_type", "TEXT NOT NULL DEFAULT ''"),
+            ("vacuum_pressure", "TEXT NOT NULL DEFAULT ''"),
+            ("vacuum_status", "TEXT NOT NULL DEFAULT ''"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE experiments ADD COLUMN {col[0]} {col[1]}")
             except sqlite3.OperationalError:
                 pass
+
+        # 测试条件动态字段（对应 MS_CONFIG 中各质谱的 test_fields）
+        for _ms_type, _ms_cfg in MS_CONFIG.items():
+            for _fname, _ in _ms_cfg.get("test_fields", []):
+                _col = _test_field_column(_fname)
+                try:
+                    conn.execute(
+                        f"ALTER TABLE experiments ADD COLUMN {_col} TEXT NOT NULL DEFAULT ''"
+                    )
+                except sqlite3.OperationalError:
+                    pass
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS maintenance (
@@ -765,6 +1269,10 @@ class MaintenanceWindow(tk.Toplevel):
         sel = self.tree.selection()
         if not sel:
             return
+
+        if not require_admin_auth(self):
+            self._set_status("管理员验证未通过，已取消编辑操作")
+            return
         rid = int(sel[0])
         row = next((r for r in self._all_rows if r["id"] == rid), None)
         if not row:
@@ -788,6 +1296,10 @@ class MaintenanceWindow(tk.Toplevel):
     def _delete(self):
         sel = self.tree.selection()
         if not sel:
+            return
+
+        if not require_admin_auth(self):
+            self._set_status("管理员验证未通过，已取消删除操作")
             return
         count = len(sel)
         if not messagebox.askyesno("确认", f"确定要删除选中的 {count} 条维护记录吗？此操作不可撤销。"):
@@ -968,6 +1480,9 @@ class App:
         self._sort_dir = {}
         self._all_rows = []
         self._rclick_start = None
+        self._test_var_map = {}       # 测试条件字段名 -> StringVar
+        self._vacuum_pressure_var = None
+        self._vacuum_status_var = None
 
         init_db()
         self.config = load_config()
@@ -985,10 +1500,18 @@ class App:
 
     def _bind_enter_nav(self):
         self._input_order = [
-            self.ent_date, self.ent_timeperiod, self.ent_name, self.ent_purpose,
-            self.ent_solvent, self.cmb_cleaned,
-            self.ent_ionsrc, self.ent_sinfo, self.ent_charge, self.ent_speaks,
+            self.ent_date, self.ent_timeperiod, self.ent_name,
         ]
+        # 真空信息
+        self._input_order.append(self.ent_vacuum_pressure)
+        self._input_order.append(self.cmb_vacuum_status)
+        # 测试条件字段
+        self._input_order.extend(self._test_entries)
+        # 实验目的 / 溶剂 / 样品信息 / 电荷 / 样品峰 / 是否清洗干净
+        self._input_order.extend([
+            self.ent_purpose, self.ent_solvent, self.ent_sinfo, self.ent_charge,
+            self.ent_speaks, self.cmb_cleaned,
+        ])
 
         def make_handler(nxt):
             def handler(event):
@@ -996,11 +1519,6 @@ class App:
                 if isinstance(nxt, ttk.Combobox):
                     try:
                         nxt.event_generate("<Button-1>")
-                    except Exception:
-                        pass
-                elif nxt is self.ent_ionsrc:
-                    try:
-                        nxt.icursor(tk.END)
                     except Exception:
                         pass
                 else:
@@ -1067,6 +1585,26 @@ class App:
                               command=self._open_maintenance)
         btn_maint.pack(side=tk.RIGHT, padx=4)
 
+        btn_pwd = tk.Button(btn_frame, text="🔒 修改密码", width=12,
+                            font=("Segoe UI", 9, "bold"),
+                            bg=BG_INPUT, fg=ACCENT,
+                            activebackground="#30363d", activeforeground=ACCENT_HIGHLIGHT,
+                            relief="flat", bd=1, cursor="hand2",
+                            command=lambda: show_change_password_dialog(self.root))
+        btn_pwd.pack(side=tk.RIGHT, padx=4)
+        btn_pwd.bind("<Enter>", lambda e: btn_pwd.configure(bg="#1c2638"))
+        btn_pwd.bind("<Leave>", lambda e: btn_pwd.configure(bg=BG_INPUT))
+
+        btn_clear = tk.Button(btn_frame, text="🗑 清除缓存数据", width=14,
+                              font=("Segoe UI", 9, "bold"),
+                              bg=BG_INPUT, fg=RED_STATUS,
+                              activebackground="#30363d", activeforeground="#ff7b72",
+                              relief="flat", bd=1, cursor="hand2",
+                              command=self._clear_cache_data)
+        btn_clear.pack(side=tk.RIGHT, padx=4)
+        btn_clear.bind("<Enter>", lambda e: btn_clear.configure(bg="#1c2638"))
+        btn_clear.bind("<Leave>", lambda e: btn_clear.configure(bg=BG_INPUT))
+
         ttk.Separator(self.root, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
         # ---- 表单区 ----
@@ -1105,67 +1643,91 @@ class App:
         self.btn_cancel = ttk.Button(r0, text="取消编辑", command=self._cancel_edit, state=tk.DISABLED)
         self.btn_cancel.pack(side=tk.RIGHT, padx=4)
 
-        # Row 1: 实验目的
-        r1 = tk.Frame(top, bg=BG_PANEL)
-        r1.pack(fill=tk.X, pady=(0, 8))
-        tk.Label(r1, text="实验目的", fg=FG_PRIMARY, bg=BG_PANEL,
+        # Row 1: 真空信息（紧跟日期/时间段/姓名）
+        r_vac = tk.Frame(top, bg=BG_PANEL)
+        r_vac.pack(fill=tk.X, pady=(0, 8))
+
+        tk.Label(r_vac, text="真空信息", fg=ACCENT_HIGHLIGHT, bg=BG_PANEL,
+                 font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 16))
+
+        tk.Label(r_vac, text="真空度", fg=FG_PRIMARY, bg=BG_PANEL,
                  font=("Segoe UI", 9)).pack(side=tk.LEFT)
-        self.var_purpose = tk.StringVar()
-        self.ent_purpose = ttk.Entry(r1, textvariable=self.var_purpose, width=100)
-        self.ent_purpose.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+        self._vacuum_pressure_var = tk.StringVar()
+        self.ent_vacuum_pressure = ttk.Entry(r_vac, textvariable=self._vacuum_pressure_var, width=16)
+        self.ent_vacuum_pressure.pack(side=tk.LEFT, padx=4)
 
-        # Row 1.5: 溶剂 | 是否清洗干净
-        r1b = tk.Frame(top, bg=BG_PANEL)
-        r1b.pack(fill=tk.X, pady=(0, 8))
-        tk.Label(r1b, text="溶剂", fg=FG_PRIMARY, bg=BG_PANEL,
-                 font=("Segoe UI", 9)).pack(side=tk.LEFT)
-        self.var_solvent = tk.StringVar()
-        self.ent_solvent = ttk.Entry(r1b, textvariable=self.var_solvent, width=30)
-        self.ent_solvent.pack(side=tk.LEFT, padx=4)
+        tk.Label(r_vac, text="真空状态", fg=FG_PRIMARY, bg=BG_PANEL,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(16, 0))
+        self._vacuum_status_var = tk.StringVar(value="正常")
+        self.cmb_vacuum_status = ttk.Combobox(r_vac, textvariable=self._vacuum_status_var,
+                                              values=list(VACUUM_STATUS_OPTIONS), width=8,
+                                              state="readonly")
+        self.cmb_vacuum_status.pack(side=tk.LEFT, padx=4)
 
-        tk.Label(r1b, text="是否清洗干净", fg=FG_PRIMARY, bg=BG_PANEL,
-                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(20, 0))
-        self.var_cleaned = tk.StringVar()
-        self.cmb_cleaned = ttk.Combobox(r1b, textvariable=self.var_cleaned,
-                                         values=["是", "否"], width=6, state="readonly")
-        self.cmb_cleaned.pack(side=tk.LEFT, padx=4)
+        # Row 2: 测试条件（全部集中到一行）
+        tk.Label(top, text="测试条件", fg=ACCENT_HIGHLIGHT, bg=BG_PANEL,
+                 font=("Segoe UI", 9, "bold")).pack(anchor=tk.W, pady=(0, 3))
 
-        # Row 2: 测试条件
-        r2 = tk.Frame(top, bg=BG_PANEL)
-        r2.pack(fill=tk.X, pady=(0, 8))
-        tk.Label(r2, text=self.ms_cfg["ion_label"], fg=FG_PRIMARY, bg=BG_PANEL,
-                 font=("Segoe UI", 9)).pack(side=tk.LEFT)
-        self.var_ionsrc = tk.StringVar(value=self.ms_cfg["ion_default"])
-        self.ent_ionsrc = ttk.Entry(r2, textvariable=self.var_ionsrc, width=70)
-        self.ent_ionsrc.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+        r_test = tk.Frame(top, bg=BG_PANEL)
+        r_test.pack(fill=tk.X, pady=(0, 8))
+        self._test_entries = []
+        self._test_var_map = {}
+        for fname, default_val in self.ms_cfg.get("test_fields", []):
+            cell = tk.Frame(r_test, bg=BG_PANEL)
+            cell.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+            tk.Label(cell, text=fname, fg=FG_PRIMARY, bg=BG_PANEL,
+                     font=("Segoe UI", 9, "bold")).pack(anchor=tk.W)
+            var = tk.StringVar(value=default_val)
+            ent = ttk.Entry(cell, textvariable=var)
+            ent.pack(fill=tk.X, pady=(1, 0))
+            self._test_var_map[fname] = var
+            self._test_entries.append(ent)
 
-        # Row 3: 样品信息 | 电荷 | [计算]
+        # Row 3: 实验目的 | 溶剂 | 样品信息 | 电荷 | [计算]
         r3 = tk.Frame(top, bg=BG_PANEL)
         r3.pack(fill=tk.X, pady=(0, 8))
-        tk.Label(r3, text="样品信息", fg=FG_PRIMARY, bg=BG_PANEL,
+
+        tk.Label(r3, text="实验目的", fg=FG_PRIMARY, bg=BG_PANEL,
                  font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        self.var_purpose = tk.StringVar()
+        self.ent_purpose = ttk.Entry(r3, textvariable=self.var_purpose, width=28)
+        self.ent_purpose.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+
+        tk.Label(r3, text="溶剂", fg=FG_PRIMARY, bg=BG_PANEL,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(12, 0))
+        self.var_solvent = tk.StringVar()
+        self.ent_solvent = ttk.Entry(r3, textvariable=self.var_solvent, width=12)
+        self.ent_solvent.pack(side=tk.LEFT, padx=4)
+
+        tk.Label(r3, text="样品信息", fg=FG_PRIMARY, bg=BG_PANEL,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(12, 0))
         self.var_sinfo = tk.StringVar()
-        self.ent_sinfo = ttk.Entry(r3, textvariable=self.var_sinfo, width=55)
+        self.ent_sinfo = ttk.Entry(r3, textvariable=self.var_sinfo, width=22)
         self.ent_sinfo.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
 
         tk.Label(r3, text="电荷", fg=FG_PRIMARY, bg=BG_PANEL,
-                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(14, 0))
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(12, 0))
         self.var_charge = tk.StringVar()
         self.ent_charge = ttk.Entry(r3, textvariable=self.var_charge, width=8)
         self.ent_charge.pack(side=tk.LEFT, padx=4)
-        tk.Label(r3, text="例: 2+, 1-, +3", fg=FG_SECONDARY, bg=BG_PANEL,
-                 font=("Segoe UI", 8)).pack(side=tk.LEFT, padx=(0, 8))
 
-        ttk.Button(r3, text="计算样品峰 m/z", command=self._calc_peaks).pack(side=tk.LEFT)
+        ttk.Button(r3, text="计算 m/z", command=self._calc_peaks).pack(side=tk.LEFT, padx=(8, 0))
 
-        # Row 4: 样品峰
+        # Row 4: 样品峰 | 是否清洗干净
         r4 = tk.Frame(top, bg=BG_PANEL)
         r4.pack(fill=tk.X)
         tk.Label(r4, text="样品峰", fg=FG_PRIMARY, bg=BG_PANEL,
                  font=("Segoe UI", 9)).pack(side=tk.LEFT)
         self.var_speaks = tk.StringVar()
-        self.ent_speaks = ttk.Entry(r4, textvariable=self.var_speaks, width=100)
+        self.ent_speaks = ttk.Entry(r4, textvariable=self.var_speaks, width=40)
         self.ent_speaks.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+
+        tk.Label(r4, text="是否清洗干净", fg=FG_PRIMARY, bg=BG_PANEL,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(12, 0))
+        self.var_cleaned = tk.StringVar()
+        self.cmb_cleaned = ttk.Combobox(r4, textvariable=self.var_cleaned,
+                                         values=["是", "否"], width=6, state="readonly")
+        self.cmb_cleaned.pack(side=tk.LEFT, padx=4)
 
         ttk.Separator(self.root, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
@@ -1187,9 +1749,14 @@ class App:
         tree_frame = tk.Frame(self.root, bg=BG_DARK, padx=16, pady=4)
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("id", "日期", "时间段", "实验目的", "姓名", "测试条件", "样品信息", "电荷", "样品峰", "溶剂", "是否清洗干净")
+        # 动态列：固定列 + 测试条件字段 + 真空信息
+        base_cols = ("id", "日期", "时间段", "实验目的", "姓名")
+        tail_cols = ("样品信息", "电荷", "样品峰", "溶剂", "是否清洗干净")
+        self.test_cols = tuple(fname for fname, _ in self.ms_cfg.get("test_fields", []))
+        self.vacuum_cols = VACUUM_FIELDS
+        cols = base_cols + self.test_cols + self.vacuum_cols + tail_cols
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended")
-        widths = [35, 95, 85, 160, 65, 160, 130, 50, 130, 70, 80]
+        widths = [35, 95, 85, 160, 65] + [90] * len(self.test_cols) + [80, 70] + [130, 50, 130, 70, 80]
         for c, w in zip(cols, widths):
             self.tree.heading(c, text=c, command=lambda col=c: self._sort(col))
             self.tree.column(c, width=w, minwidth=35, stretch=c not in ("id", "电荷"))
@@ -1277,38 +1844,61 @@ class App:
         self._set_status(f"已计算: 质量={parse_formula(sinfo)[0]:.4f}, 电荷={charge} → m/z={mz:.2f}")
 
     # ========== CRUD ==========
-    def _save(self):
+    def _collect_form_data(self):
+        """汇总表单字段值为 dict（键为数据库列名）"""
         data = {
             "date": self.var_date.get().strip(),
             "time_period": self.var_timeperiod.get().strip(),
             "purpose": self.var_purpose.get().strip(),
             "name": self.var_name.get().strip(),
-            "ion_source": self.var_ionsrc.get().strip(),
             "sample_info": self.var_sinfo.get().strip(),
             "charge": self.var_charge.get().strip(),
             "sample_peaks": self.var_speaks.get().strip(),
             "solvent": self.var_solvent.get().strip(),
             "cleaned": self.var_cleaned.get().strip(),
+            "vacuum_pressure": self._vacuum_pressure_var.get().strip(),
+            "vacuum_status": self._vacuum_status_var.get().strip(),
         }
-        if not all(data.values()):
-            messagebox.showwarning("提示", "所有字段均为必填，请完整填写。")
+        for fname, var in self._test_var_map.items():
+            data[_test_field_column(fname)] = var.get().strip()
+        return data
+
+    def _save(self):
+        data = self._collect_form_data()
+        # 校验必填字段：日期、姓名、实验目的等基础字段，以及动态测试条件、真空信息
+        required = ["date", "time_period", "purpose", "name",
+                    "sample_info", "charge", "solvent", "cleaned",
+                    "vacuum_pressure", "vacuum_status"]
+        required += [_test_field_column(fname) for fname, _ in self.ms_cfg.get("test_fields", [])]
+        missing = [k for k in required if not data.get(k)]
+        if missing:
+            messagebox.showwarning("提示", "请完整填写所有字段（含测试条件与真空信息）。")
             return
 
-        with get_db() as conn:
-            if self.editing_id:
-                conn.execute(
-                    "UPDATE experiments SET date=?, time_period=?, purpose=?, name=?, "
-                    "ion_source=?, sample_info=?, charge=?, sample_peaks=?, solvent=?, cleaned=?, ms_type=? WHERE id=?",
-                    (*data.values(), self.ms_type, self.editing_id),
-                )
-                self._set_status(f"已更新记录 #{self.editing_id}")
-            else:
-                cur = conn.execute(
-                    "INSERT INTO experiments (date, time_period, purpose, name, ion_source, sample_info, charge, sample_peaks, solvent, cleaned, ms_type) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (*data.values(), self.ms_type),
-                )
-                self._set_status(f"已创建记录 #{cur.lastrowid}")
+        unprotect_data_files()
+        try:
+            columns = list(data.keys())
+            with get_db() as conn:
+                if self.editing_id:
+                    set_clause = ", ".join(f"{c}=?" for c in columns)
+                    conn.execute(
+                        f"UPDATE experiments SET {set_clause}, ms_type=? WHERE id=?",
+                        (*[data[c] for c in columns], self.ms_type, self.editing_id),
+                    )
+                    self._set_status(f"已更新记录 #{self.editing_id}")
+                else:
+                    placeholders = ", ".join("?" * len(columns))
+                    cur = conn.execute(
+                        f"INSERT INTO experiments ({', '.join(columns)}, ms_type) "
+                        f"VALUES ({placeholders}, ?)",
+                        (*[data[c] for c in columns], self.ms_type),
+                    )
+                    self._set_status(f"已创建记录 #{cur.lastrowid}")
+        except Exception as e:
+            messagebox.showerror("保存失败", f"数据库错误: {e}")
+            return
+        finally:
+            protect_data_files()
 
         self._cancel_edit()
         self._clear_form()
@@ -1331,11 +1921,12 @@ class App:
         self.tree.delete(*self.tree.get_children())
         for r in rows:
             d = dict(r)
-            self.tree.insert("", tk.END, iid=str(d["id"]),
-                             values=(d["id"], d["date"], d["time_period"], d["purpose"],
-                                     d["name"], d["ion_source"], d["sample_info"],
-                                     d["charge"], d["sample_peaks"],
-                                     d.get("solvent", ""), d.get("cleaned", "")))
+            values = (d["id"], d["date"], d["time_period"], d["purpose"], d["name"])
+            values += tuple(d.get(_test_field_column(fname), "") for fname, _ in self.ms_cfg.get("test_fields", []))
+            values += (d.get("vacuum_pressure", ""), d.get("vacuum_status", ""))
+            values += (d["sample_info"], d["charge"], d["sample_peaks"],
+                       d.get("solvent", ""), d.get("cleaned", ""))
+            self.tree.insert("", tk.END, iid=str(d["id"]), values=values)
         self._auto_fit_columns()
         self._set_status(f"共 {len(rows)} 条记录")
 
@@ -1349,7 +1940,7 @@ class App:
             font = tkfont.nametofont("TkDefaultFont")
         padding = 28
 
-        cols = ("id", "日期", "时间段", "实验目的", "姓名", "测试条件", "样品信息", "电荷", "样品峰", "溶剂", "是否清洗干净")
+        cols = tuple(self.tree["columns"])
         children = self.tree.get_children()
 
         for col in cols:
@@ -1369,6 +1960,10 @@ class App:
         if not sel:
             messagebox.showinfo("提示", "请先在表格中选中一条记录。")
             return
+
+        if not require_admin_auth(self.root):
+            self._set_status("管理员验证未通过，已取消编辑操作")
+            return
         rid = int(sel[0])
         row = next((r for r in self._all_rows if r["id"] == rid), None)
         if not row:
@@ -1379,7 +1974,10 @@ class App:
         self.var_timeperiod.set(row["time_period"])
         self.var_purpose.set(row["purpose"])
         self.var_name.set(row["name"])
-        self.var_ionsrc.set(row["ion_source"])
+        for fname, var in self._test_var_map.items():
+            var.set(row[_test_field_column(fname)] if _test_field_column(fname) in row.keys() else "")
+        self._vacuum_pressure_var.set(row["vacuum_pressure"] if "vacuum_pressure" in row.keys() else "")
+        self._vacuum_status_var.set(row["vacuum_status"] if "vacuum_status" in row.keys() else "正常")
         self.var_sinfo.set(row["sample_info"])
         self.var_charge.set(row["charge"])
         self.var_speaks.set(row["sample_peaks"])
@@ -1398,12 +1996,20 @@ class App:
         if not sel:
             messagebox.showinfo("提示", "请先在表格中选中要删除的记录。")
             return
+
+        if not require_admin_auth(self.root):
+            self._set_status("管理员验证未通过，已取消删除操作")
+            return
         count = len(sel)
         if not messagebox.askyesno("确认", f"确定要删除选中的 {count} 条记录吗？此操作不可撤销。"):
             return
         ids = [int(s) for s in sel]
-        with get_db() as conn:
-            conn.executemany("DELETE FROM experiments WHERE id = ?", [(i,) for i in ids])
+        unprotect_data_files()
+        try:
+            with get_db() as conn:
+                conn.executemany("DELETE FROM experiments WHERE id = ?", [(i,) for i in ids])
+        finally:
+            protect_data_files()
         if self.editing_id in ids:
             self._cancel_edit()
             self._clear_form()
@@ -1415,7 +2021,10 @@ class App:
         self.var_timeperiod.set("")
         self.var_purpose.set("")
         self.var_name.set("")
-        self.var_ionsrc.set(self.ms_cfg["ion_default"])
+        for fname, default_val in self.ms_cfg.get("test_fields", []):
+            self._test_var_map[fname].set(default_val)
+        self._vacuum_pressure_var.set("")
+        self._vacuum_status_var.set("正常")
         self.var_sinfo.set("")
         self.var_charge.set("")
         self.var_speaks.set("")
@@ -1432,13 +2041,16 @@ class App:
             "时间段": lambda r: r["time_period"],
             "实验目的": lambda r: r["purpose"],
             "姓名": lambda r: r["name"],
-            "测试条件": lambda r: r["ion_source"],
+            "真空度": lambda r: r.get("vacuum_pressure", ""),
+            "真空状态": lambda r: r.get("vacuum_status", ""),
             "样品信息": lambda r: r["sample_info"],
             "电荷": lambda r: r["charge"],
             "样品峰": lambda r: r["sample_peaks"],
             "溶剂": lambda r: r.get("solvent", ""),
             "是否清洗干净": lambda r: r.get("cleaned", ""),
         }
+        for fname, _ in self.ms_cfg.get("test_fields", []):
+            key_map[fname] = (lambda col: lambda r: r.get(col, ""))(_test_field_column(fname))
         self._all_rows = sorted(self._all_rows, key=key_map.get(col, lambda r: r["id"]), reverse=rev)
         self._apply_filter()
 
@@ -1471,7 +2083,11 @@ class App:
 
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
-            w.writerow(["ID", "日期", "时间段", "实验目的", "姓名", "测试条件", "样品信息", "电荷", "样品峰", "溶剂", "是否清洗干净", "创建时间", "质谱类型"])
+            headers = (["ID", "日期", "时间段", "实验目的", "姓名"]
+                       + list(self.test_cols)
+                       + list(self.vacuum_cols)
+                       + ["样品信息", "电荷", "样品峰", "溶剂", "是否清洗干净", "创建时间", "质谱类型"])
+            w.writerow(headers)
             for iid in sel:
                 values = list(self.tree.item(iid, "values"))
                 rid = int(iid)
@@ -1507,7 +2123,10 @@ class App:
         ws = wb.active
         ws.title = f"{self.ms_type} Operation Log"
 
-        headers = ["ID", "日期", "时间段", "实验目的", "姓名", "测试条件", "样品信息", "电荷", "样品峰", "溶剂", "是否清洗干净", "创建时间", "质谱类型"]
+        headers = (["ID", "日期", "时间段", "实验目的", "姓名"]
+                   + list(self.test_cols)
+                   + list(self.vacuum_cols)
+                   + ["样品信息", "电荷", "样品峰", "溶剂", "是否清洗干净", "创建时间", "质谱类型"])
         ws.append(headers)
 
         ids = [int(iid) for iid in sel]
@@ -1559,6 +2178,13 @@ class App:
     def _open_maintenance(self):
         MaintenanceWindow(self.root, self.ms_type)
 
+    def _clear_cache_data(self):
+        if show_clear_cache_dialog(self.root):
+            self._cancel_edit()
+            self._clear_form()
+            self._load_data()
+            self._set_status("缓存数据已清除")
+
     def _set_status(self, msg):
         self.status.config(text=msg)
 
@@ -1588,4 +2214,3 @@ def run_app():
 
 if __name__ == "__main__":
     run_app()
-

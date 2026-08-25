@@ -8,10 +8,29 @@
 
 ---
 
+## 目录
+
+- [功能特性](#-功能特性)
+- [屏幕截图](#-屏幕截图)
+- [快速开始](#-快速开始)
+- [使用说明](#-使用说明)
+- [数据库结构](#-数据库结构)
+- [支持的质谱仪](#-支持的质谱仪)
+- [从源码构建](#-从源码构建)
+- [项目文件说明](#-项目文件说明)
+- [数据与隐私](#-数据与隐私)
+- [使用限制](#️-使用限制)
+- [开发状态](#-开发状态)
+- [贡献者](#-贡献者)
+- [许可证](#-许可证)
+
+---
+
 ## ✨ 功能特性
 
 ### 实验记录管理
-- 📝 完整记录每次质谱实验信息：**日期、时间段、姓名、实验目的、溶剂、清洗状态、测试条件、样品分子式、电荷、样品峰**
+- 📝 完整记录每次质谱实验信息：**日期、时间段、姓名、实验目的、溶剂、清洗状态、真空信息（真空度/真空状态）、测试条件、样品分子式、电荷、样品峰**
+- 🧪 **测试条件按质谱类型动态切换**：Q-IM-TOF / LTQ / Q-Exactive 各有专属参数集，切换仪器后自动载入对应字段
 - ⚗️ **分子式 m/z 自动计算**：内置完整元素周期表原子量数据库，支持任意复杂度分子式（含括号嵌套、水合物/加合物），输入分子式和电荷后一键计算 m/z
 - 🔍 实时搜索筛选、列头排序、右键拖拽批量多选
 
@@ -25,11 +44,10 @@
 - 📤 实验记录 & 维护记录均支持**导出为 CSV 或 Excel（.xlsx）**
 - 🎨 Excel 导出自动调整列宽、表头加粗，维护状态按颜色标注
 
-### 管理员权限保护
-- 🔐 **首次启动设置管理员密码**（SHA-256 加密存储于本地配置文件）
-- 🔒 编辑和删除记录（实验记录 & 维护记录）均需验证管理员密码
-- 🔑 支持修改管理员密码（需先通过旧密码验证）
-  
+### 数据安全
+- 🔒 **管理员密码**：首次编辑/删除记录时引导设置，此后所有编辑、删除、清空操作均需验证身份（密码以 SHA-256 哈希存储）
+- 🛡️ **数据防误删保护**：应用退出时自动将数据库与配置文件设为「隐藏 + 只读」属性（Windows），防止误删
+
 ### 用户体验
 - 🌙 **深色主题**（GitHub Dark 风格），长时间使用不刺眼
 - ⌨️ 键盘友好：Enter 在输入字段间跳转，Ctrl+S 快速保存，Ctrl+F 聚焦搜索
@@ -39,36 +57,51 @@
 
 ## 📸 屏幕截图
 
+> 以下为应用运行截图（点击图片可查看大图）
+
 <p align="center">
-  <img src="docs/01-home.png" alt="Main interface for selecting a mass spectrometer" width="45%">
+  <img src="docs/01-home.png" alt="选择质谱类型" width="45%">
   &nbsp;&nbsp;
-  <img src="docs/02-experiment-log.png" alt="Experiment record management interface" width="45%">
+  <img src="docs/02-experiment-log.png" alt="实验记录管理界面" width="45%">
 </p>
 
 <p align="center">
-  <img src="docs/03-maintenance-log.png" alt="Maintenance record management interface" width="60%">
+  <img src="docs/03-maintenance-log.png" alt="维护记录管理界面" width="60%">
 </p>
 
 ---
 
 ## 🚀 快速开始
 
-### 方式一：直接运行 exe（推荐）
+### 方式一：使用已发布的预览版 exe
 
 1. 前往 [Releases](https://github.com/Shiqi-Liu-chem/lab-mass-spec-maintenance/releases) 页面
-2. 下载最新版本 `MS_recording&maintenance.exe`
+2. 下载当前预发布版本中的 `MS_recording.maintenance.exe`
 3. 双击运行即可，无需安装 Python 环境
 
-> 📌 首次运行时需选择质谱类型；后续启动将自动记住上次选择。
+> 📌 当前公开 exe 为 `v0.1.0-alpha` 预览版；仓库源码可能先于可执行文件更新。首次运行时需选择质谱类型，后续启动将自动记住上次选择。
 
 ### 方式二：从源码运行
 
 **系统要求**：Python 3.8+
 
 ```bash
+# 1. 安装依赖
 pip install -r requirements.txt
-python app.py
+
+# 2. 运行
+python "MS_recording&maintenance.py"
 ```
+
+### Windows 兼容性状态
+
+| 版本 | 状态 | 获取方式 |
+|------|------|----------|
+| 当前 Windows 版本 | 源码持续更新；公开 exe 为 `v0.1.0-alpha` | 仓库源码 / Releases |
+| Windows 7 x64 | 兼容构建已完成本地验证，正式发布包待重新构建 | 尚未公开发布 |
+| Windows XP x86 | 离线兼容构建已完成本地验证，正式发布包待重新构建 | 尚未公开发布 |
+
+旧系统构建环境、缓存和测试数据库不纳入 Git 仓库；通过最终验证后，只在 Releases 发布对应 ZIP 与 SHA256 校验值。
 
 ---
 
@@ -76,10 +109,15 @@ python app.py
 
 ### 实验记录管理
 
-1. 在主页面上方的表单区域依次填写：**日期**（默认今天）、**时间段**（如 `6:45-9:00`）、**姓名**、**实验目的**、**溶剂**、**是否清洗干净**
-2. 输入**测试条件**（每种质谱仪有默认值）、**样品信息**（分子式）、**电荷**（如 `2+`, `1-`, `+3`）
-3. 点击「**计算样品峰 m/z**」按钮，自动计算 m/z 值并填入「样品峰」字段
-4. 点击「**保存**」或按 `Ctrl+S`
+1. 在主页面上方的表单区域依次填写：
+   - **日期**（默认今天）、**时间段**（如 `6:45-9:00`）、**姓名**
+   - **真空信息**（真空度、真空状态）
+   - **测试条件**（每种质谱仪有默认值，切换仪器后自动变化）
+   - **实验目的**、**溶剂**、**样品信息**（分子式）、**电荷**（如 `2+`, `1-`, `+3`）、**是否清洗干净**
+2. 点击「**计算 m/z**」按钮，自动计算 m/z 值并填入「样品峰」字段
+3. 点击「**保存**」或按 `Ctrl+S`
+
+> 🔒 首次执行**编辑 / 删除**操作时，系统会引导设置管理员密码，此后相关操作均需验证身份。
 
 ### 分子式 m/z 计算
 
@@ -93,17 +131,20 @@ python app.py
 ### 维护记录管理
 
 1. 点击右上角「**🔧 维护记录**」按钮进入维护管理页面
-2. 填写**日期**、**姓名**、**维护类型**（下拉选择，每台仪器有专属维护项）
-3. 设置**状态**（正常 / 需关注 / 异常），点击「自动计算」根据推荐周期自动填充**下次维护日期**
-4. 保存后，表格中会按状态着色，超期记录红色背景提醒
+2. 在表单中填写：
+   - **日期**、**姓名**（操作人员）
+   - **维护类型**（下拉选择，每台仪器有专属维护项）
+   - **状态**：正常 / 需关注 / 异常
+   - **下次维护**：可点击「自动计算」根据推荐周期自动填充
+   - **备注**：自由描述
+3. 保存后，表格中会按状态着色，超期记录红色背景提醒
+4. 底部显示各项维护的**上次时间和周期对比**，快速掌握维护进度
 
-### 管理员密码
+### 数据导出
 
-应用首次在新设备上运行时，会自动弹出「设置管理员密码」对话框。设置后，每次进行**编辑选中**或**删除选中**操作（实验记录和维护记录均适用）时，都需要输入该密码验证身份。
-
-- 密码通过 SHA-256 哈希存储在 `ms_config.json` 中，不以明文保存
-- 如需修改密码，点击主界面右上角「🔒 修改密码」按钮
-- 若忘记密码，可删除 `ms_config.json` 文件重置（会同时清除质谱类型选择）
+- **CSV 导出**：选中表格行 → 点击「导出 CSV」
+- **Excel 导出**：选中表格行 → 点击「导出 Excel」→ 自动调整列宽和格式
+- 未选中记录时不会执行导出
 
 ### 快捷键
 
@@ -114,6 +155,56 @@ python app.py
 | `Ctrl+F` | 聚焦搜索框 |
 | `双击记录` | 编辑该条记录 |
 | `右键拖拽` | 批量选中多行 |
+
+---
+
+## 🗄 数据库结构
+
+应用使用 SQLite 数据库（`ms_data.db`），含 `experiments`（实验记录）与 `maintenance`（维护记录）两张表，另有一份 JSON 配置文件（`ms_config.json`）。
+
+Windows 下的数据保存在当前用户目录：
+
+```text
+%APPDATA%\MSRecordingMaintenance\ms_data.db
+%APPDATA%\MSRecordingMaintenance\ms_config.json
+```
+
+从旧版便携式发布包升级时，如果程序目录中存在旧的数据库或配置文件，并且用户数据目录尚无对应文件，应用会自动复制旧文件；不会覆盖已有用户数据。升级前仍建议手动备份数据库。
+
+### `experiments` 表 — 实验记录
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | INTEGER | 主键，自增 |
+| `date` | TEXT | 实验日期（如 2025-01-15） |
+| `time_period` | TEXT | 时间段（如 6:45-9:00） |
+| `purpose` | TEXT | 实验目的 |
+| `name` | TEXT | 操作者姓名 |
+| `sample_info` | TEXT | 样品分子式 |
+| `charge` | TEXT | 电荷信息 |
+| `sample_peaks` | TEXT | 样品峰 m/z 值 |
+| `solvent` | TEXT | 溶剂 |
+| `cleaned` | TEXT | 是否清洗干净（是/否） |
+| `vacuum_pressure` | TEXT | 真空度 |
+| `vacuum_status` | TEXT | 真空状态（正常/需关注/异常） |
+| `ms_type` | TEXT | 质谱类型 |
+| `created_at` | TEXT | 创建时间（自动填充） |
+
+> 测试条件按质谱类型拆分为多个动态字段（如毛细管电压、鞘气、喷雾电压等），同一物理参数在不同质谱间共用列。字段级说明见 [docs/data_model.md](docs/data_model.md)。
+
+### `maintenance` 表 — 维护记录
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | INTEGER | 主键，自增 |
+| `ms_type` | TEXT | 质谱类型 |
+| `date` | TEXT | 维护日期 |
+| `name` | TEXT | 维护人员姓名 |
+| `record_type` | TEXT | 维护类型 |
+| `status` | TEXT | 维护后状态（正常/需关注/异常） |
+| `notes` | TEXT | 备注 |
+| `next_date` | TEXT | 建议下次维护日期 |
+| `created_at` | TEXT | 创建时间（自动填充） |
 
 ---
 
@@ -131,11 +222,19 @@ python app.py
 
 ## 🔧 从源码构建
 
+使用 PyInstaller 打包为 Windows 可执行文件：
+
 ```bash
+# 安装 PyInstaller
 pip install pyinstaller
+
+# 使用 .spec 文件构建
 pyinstaller "MS_recording&maintenance.spec"
+
 # 输出在 dist/ 目录下
 ```
+
+> `.spec` 文件已预先配置好 `--windowed`（无控制台窗口）和所需 hidden imports。
 
 ---
 
@@ -143,13 +242,13 @@ pyinstaller "MS_recording&maintenance.spec"
 
 | 文件/目录 | 说明 |
 |-----------|------|
-| `app.py` | 主程序源码 |
+| `MS_recording&maintenance.py` | 主程序源码（约 2200 行） |
 | `MS_recording&maintenance.spec` | PyInstaller 构建配置 |
 | `requirements.txt` | Python 依赖 |
-| `docs/screenshots/` | 应用截图 |
-| `docs/storyboard.md` | 宣传视频分镜脚本 |
-| `docs/data_model.md` | 数据库字段说明 |
+| `docs/` | 应用截图与数据模型文档 |
 | `sample_data/` | 脱敏示例数据 |
+| `docs/data_model.md` | 数据库与配置文件字段说明 |
+| `dist/` | 本地打包输出目录（由 Git 忽略；exe 通过 Releases 发布） |
 
 ---
 
@@ -186,15 +285,7 @@ pyinstaller "MS_recording&maintenance.spec"
 
 ---
 
-## 🙏 致谢
-
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) — 开源 OCR 引擎
-- [Anthropic](https://www.anthropic.com/) — Claude Code AI 编程助手
-- 课题组全体成员对需求调研与功能测试的支持
-
----
-
-## 🔗 课题组主页
+## 🏫 课题组主页
 
 🏫 [中国科学院青岛生物能源与过程研究所 — 团簇化学与能源催化课题组](http://cluster.qibebt.ac.cn/)
 
@@ -210,13 +301,12 @@ pyinstaller "MS_recording&maintenance.spec"
 - 联系方式：riixz17ya@gmail.com
 - *（其他协作者待补充）*
 
-> 本项目的主要代码由 [Claude Code](https://claude.ai/code)（Anthropic 出品的 AI 编程智能体）辅助编写完成。
-
 ---
 
-## 🤖 AI 辅助开发
+## 🙏 致谢
 
-本项目由 Shiqi Liu 设计并主导开发，Claude Code 提供编码辅助。AI 工具参与了代码实现、调试与文档编写。项目需求、科学背景、设计决策、测试及最终审核均由作者负责。
+- 本项目代码由 [Claude Code](https://claude.ai/code)（Anthropic AI 编程助手）辅助编写
+- 需求与测试：[中国科学院青岛生物能源与过程研究所 — 团簇化学与能源催化课题组](http://cluster.qibebt.ac.cn/)
 
 ---
 
@@ -226,4 +316,4 @@ pyinstaller "MS_recording&maintenance.spec"
 
 ---
 
-*Last updated: 2026-07*
+*Last updated: 2026-08-25*
