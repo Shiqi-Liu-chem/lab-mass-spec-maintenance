@@ -46,7 +46,7 @@
 
 ### 数据安全
 - 🔒 **管理员密码**：首次编辑/删除记录时引导设置，此后所有编辑、删除、清空操作均需验证身份（密码以 SHA-256 哈希存储）
-- 🛡️ **数据防误删保护**：应用退出时自动将数据库与配置文件设为「隐藏 + 只读」属性（Windows），防止误删
+- 🗂️ **用户数据隔离**：数据库与配置保存在当前用户的 `%APPDATA%\MSRecordingMaintenance` 目录，旧版便携数据可在首次启动时自动迁移
 
 ### 用户体验
 - 🌙 **深色主题**（GitHub Dark 风格），长时间使用不刺眼
@@ -180,6 +180,7 @@ Windows 下的数据保存在当前用户目录：
 | `time_period` | TEXT | 时间段（如 6:45-9:00） |
 | `purpose` | TEXT | 实验目的 |
 | `name` | TEXT | 操作者姓名 |
+| `ion_source` | TEXT | 旧版“测试条件”兼容字段 |
 | `sample_info` | TEXT | 样品分子式 |
 | `charge` | TEXT | 电荷信息 |
 | `sample_peaks` | TEXT | 样品峰 m/z 值 |
@@ -246,7 +247,7 @@ pyinstaller "MS_recording&maintenance.spec"
 | `MS_recording&maintenance.spec` | PyInstaller 构建配置 |
 | `requirements.txt` | Python 依赖 |
 | `docs/` | 应用截图与数据模型文档 |
-| `sample_data/` | 脱敏示例数据 |
+| `example_data/` | 由当前版本导出的脱敏示例 Excel |
 | `docs/data_model.md` | 数据库与配置文件字段说明 |
 | `dist/` | 本地打包输出目录（由 Git 忽略；exe 通过 Releases 发布） |
 
@@ -275,8 +276,8 @@ pyinstaller "MS_recording&maintenance.spec"
 
 - [x] 核心实验与维护记录工作流已实现
 - [x] CSV 与 Excel 导出已实现
+- [x] 代表性导出样例的数据结构已核对
 - [x] Windows 可执行文件已打包
-- [ ] 代表性记录的数据完整性验证
 - [ ] 导出一致性测试
 - [ ] 更多质谱仪型号兼容性测试
 - [ ] 自动化回归测试
@@ -306,6 +307,7 @@ pyinstaller "MS_recording&maintenance.spec"
 ## 🙏 致谢
 
 - 本项目代码由 [Claude Code](https://claude.ai/code)（Anthropic AI 编程助手）辅助编写
+- 后续整理、审阅与代码更新由 [OpenAI Codex](https://openai.com/codex/) 协助完成
 - 需求与测试：[中国科学院青岛生物能源与过程研究所 — 团簇化学与能源催化课题组](http://cluster.qibebt.ac.cn/)
 
 ---
