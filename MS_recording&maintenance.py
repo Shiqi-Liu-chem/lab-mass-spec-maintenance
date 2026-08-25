@@ -1390,9 +1390,7 @@ class MaintenanceWindow(tk.Toplevel):
                 values = list(self.tree.item(iid, "values"))
                 rid = int(iid)
                 row = next((r for r in self._all_rows if r["id"] == rid), None)
-                created_at = row["created_at"] if row else ""
                 ms_type = row["ms_type"] if row else self.ms_type
-                values.append(created_at)
                 values.append(ms_type)
                 w.writerow(values)
         self._set_status(f"已导出 {len(sel)} 条维护记录到 {os.path.basename(path)}")
@@ -1419,19 +1417,6 @@ class MaintenanceWindow(tk.Toplevel):
         if not path:
             return
 
-        ids = [int(iid) for iid in sel]
-        created_at_map = {}
-        try:
-            with get_db() as conn:
-                placeholders = ",".join("?" * len(ids))
-                rows = conn.execute(
-                    f"SELECT id, created_at FROM maintenance WHERE id IN ({placeholders})",
-                    ids,
-                ).fetchall()
-                created_at_map = {r["id"]: r["created_at"] for r in rows}
-        except Exception:
-            pass
-
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = f"{self.ms_type} 维护记录"
@@ -1441,8 +1426,6 @@ class MaintenanceWindow(tk.Toplevel):
 
         for iid in sel:
             values = list(self.tree.item(iid, "values"))
-            rid = int(iid)
-            values.append(created_at_map.get(rid, ""))
             values.append(self.ms_type)
             ws.append(values)
             # 状态列(第5列)按状态着色：正常=绿色, 需关注=黄色, 异常=红色
